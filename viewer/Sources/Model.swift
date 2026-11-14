@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import QuartzCore
+import CoreGraphics
 
 @MainActor
 @Observable
@@ -13,13 +14,15 @@ final class LiveModel {
     var playingFrames = false                   // loop the animation of the shown step
     var showGrid = false
     private(set) var connected = false
+    private(set) var arrival = 0
+    private(set) var replaying = false
 
     // Render state (not observed)
     @ObservationIgnored let engine = Engine()
     @ObservationIgnored private var pending: [Int] = []   // step indices waiting to be revealed
     @ObservationIgnored private var frameClock: CFTimeInterval = 0
     @ObservationIgnored private var feed: LiveFeed?
-    @ObservationIgnored private var replaying = false
+    @ObservationIgnored private var frameImages: [Int: CGImage] = [:]
 
     let directory: URL
 
@@ -41,6 +44,7 @@ final class LiveModel {
     private func receive(_ new: [Step], backlog: Bool) {
         connected = true
         guard !new.isEmpty else { return }
+        arrival &+= 1
         let first = steps.count
         steps.append(contentsOf: new)
         if backlog {
@@ -53,26 +57,45 @@ final class LiveModel {
         }
     }
 
-    /// Called every display frame by the canvas.
+    /// Called every display refresh by DisplayDriver, before invalidating Canvas.
     func tick(now: CFTimeInterval) {
         if !engine.isAnimating, !pending.isEmpty {
             let next = pending.removeFirst()
             display(index: next, animated: true, now: now)
         }
         if engine.isAnimating == false, pending.isEmpty, replaying { replaying = false }
+        let wasAnimating = engine.isAnimating
         engine.tick(now: now)
+        if wasAnimating { frameClock = now }
         if playingFrames, let step = currentStep, step.frames.count > 1, !engine.isAnimating {
+            var elapsed = max(0, now - frameClock)
             let duration = Double(max(16, step.frames[shownFrame].durationMs)) / 1000
-            if now - frameClock >= duration {
-                frameClock = now
-                shownFrame = (shownFrame + 1) % step.frames.count
-                engine.show(step.frames[shownFrame])
+            if elapsed >= duration {
+                // Skip complete loops after a stall, then preserve the fractional
+                // remainder. Resetting the clock to `now` causes cumulative drift.
+                let cycle = step.frames.reduce(0.0) { $0 + Double(max(16, $1.durationMs)) / 1000 }
+                let loops = floor(elapsed / cycle)
+                frameClock += loops * cycle
+                elapsed -= loops * cycle
+                var next = shownFrame
+                while elapsed >= Double(max(16, step.frames[next].durationMs)) / 1000 {
+                    let interval = Double(max(16, step.frames[next].durationMs)) / 1000
+                    elapsed -= interval
+                    frameClock += interval
+                    next = (next + 1) % step.frames.count
+                }
+                if next != shownFrame {
+                    shownFrame = next
+                    engine.show(step.frames[next], image: frameImages[next])
+                    cacheFrameImage()
+                }
             }
         }
     }
 
     private func display(index: Int, animated: Bool, now: CFTimeInterval = CACurrentMediaTime()) {
         let step = steps[index]
+        let previousIndex = shownIndex
         let previous = shownIndex.map { steps[$0] }
         var frame = step.focusFrame ?? shownFrame
         frame = min(max(0, frame), step.frames.count - 1)
@@ -86,12 +109,22 @@ final class LiveModel {
 
         shownIndex = index
         shownFrame = frame
+        frameClock = now
+        if previousIndex != index { frameImages.removeAll(keepingCapacity: true) }
         let target = step.frames[frame]
         let sameSprite = previous?.sprite == step.sprite
         if animated, sameSprite, engine.animate(to: target, backlog: pending.count, now: now) {
+            cacheFrameImage()
             return
         }
-        engine.show(target)
+        engine.show(target, image: frameImages[frame], transition: previous != nil, now: now)
+        cacheFrameImage()
+    }
+
+    private func cacheFrameImage() {
+        // Bound memory for unusually long animations; normal loops reuse textures.
+        if frameImages.count >= 24 { frameImages.removeAll(keepingCapacity: true) }
+        frameImages[shownFrame] = engine.currentImage()
     }
 
     // MARK: - User actions
@@ -100,6 +133,7 @@ final class LiveModel {
         guard steps.indices.contains(index) else { return }
         following = false
         pending.removeAll()
+        replaying = false
         engine.finish()
         display(index: index, animated: false)
     }
@@ -110,6 +144,7 @@ final class LiveModel {
         guard steps.indices.contains(target) else { return }
         following = false
         pending.removeAll()
+        replaying = false
         engine.finish()
         // Stepping forward replays that step's reveal; backward jumps.
         display(index: target, animated: delta == 1)
@@ -118,8 +153,19 @@ final class LiveModel {
     func goLive() {
         following = true
         pending.removeAll()
+        replaying = false
         engine.finish()
         if !steps.isEmpty { display(index: steps.count - 1, animated: false) }
+    }
+
+    func toggleLive() {
+        if following {
+            following = false
+            pending.removeAll()
+            replaying = false
+        } else {
+            goLive()
+        }
     }
 
     /// Replay the whole session from the first step of the shown sprite.
@@ -129,15 +175,18 @@ final class LiveModel {
         following = true
         replaying = true
         playingFrames = false
+        frameImages.removeAll(keepingCapacity: true)
         engine.finish()
         let blank = steps[first].frames[0]
         engine.show(PixelFrame(width: blank.width, height: blank.height,
                                pixels: [UInt32](repeating: 0, count: blank.pixels.count), durationMs: 0))
         shownIndex = first
+        shownFrame = 0
         pending = Array(first..<steps.count).filter { steps[$0].sprite == sprite }
     }
 
     func togglePlay() {
+        guard let step = currentStep, step.frames.count > 1 else { return }
         playingFrames.toggle()
         frameClock = CACurrentMediaTime()
         if !playingFrames, let step = currentStep {

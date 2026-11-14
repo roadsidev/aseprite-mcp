@@ -6,7 +6,8 @@ the copy to a horizontal sprite sheet of every frame. Each snapshot is
 announced by one JSON line in <first root>/.live/events.jsonl:
 
     {"seq": 12, "ts": 1731567000.12, "tool": "draw_rows", "sprite": "/abs/ho-oh.aseprite",
-     "frame": 2, "caption": "Pinta 14 filas en «alas», frame 2",
+     "frame": 2, "caption": "Pinta 14 píxeles en «alas», frame 2",
+     "session": "<claude session uuid>", "kind": "sprites" | "animacion",
      "sheet": "frames/000012.png", "data": "frames/000012.json"}
 
 The viewer only reads PNG/JSON files; nothing in here executes input.
@@ -87,6 +88,10 @@ class _Feed:
             "sprite": path,
             "frame": frame if isinstance(frame, int) else None,
             "caption": caption(tool, arguments),
+            # Set by Pixel Live in the per-session MCP config, so the viewer can
+            # keep design and animation sessions apart. None for other clients.
+            "session": os.getenv("PIXEL_LIVE_SESSION") or None,
+            "kind": os.getenv("PIXEL_LIVE_KIND") or None,
             "sheet": f"frames/{seq:06d}.png",
             "data": f"frames/{seq:06d}.json",
         }

@@ -7,12 +7,12 @@ struct PixelLiveApp: App {
     var body: some Scene {
         Window("Pixel Live", id: "main") {
             ContentView(model: model)
-                .frame(minWidth: 220, minHeight: 240)
+                .frame(minWidth: 300, minHeight: 380)
         }
         .windowStyle(.hiddenTitleBar)
         .windowLevel(.floating)
         .windowBackgroundDragBehavior(.enabled)
-        .defaultSize(width: 380, height: 440)
+        .defaultSize(width: 400, height: 480)
         .windowResizability(.contentMinSize)
     }
 

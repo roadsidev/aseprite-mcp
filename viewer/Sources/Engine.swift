@@ -2,116 +2,179 @@ import Foundation
 import CoreGraphics
 import QuartzCore
 
-/// Frame-paced playback state. Owned by the model and advanced from the
-/// Canvas render closure, so it is a plain class (not observed): mutating it
-/// every frame must not invalidate SwiftUI views.
+/// Advanced by DisplayDriver before FrameClock invalidates the canvas.
+/// Source, destination and unchanged textures stay fixed during a reveal: only
+/// the narrow, moving frontier needs individual pixel drawing at each vsync.
 final class Engine {
-    struct Pop { let x: Int; let y: Int; let color: UInt32; let t: CFTimeInterval }
+    struct Change {
+        let index: Int
+        let before: UInt32
+        let after: UInt32
+        let time: CFTimeInterval
+    }
+
+    struct Components {
+        let red: CGFloat
+        let green: CGFloat
+        let blue: CGFloat
+        let alpha: CGFloat
+
+        init(_ value: UInt32) {
+            alpha = CGFloat((value >> 24) & 255) / 255
+            let divisor = max(alpha, 1 / 255) * 255
+            red = min(1, CGFloat(value & 255) / divisor)
+            green = min(1, CGFloat((value >> 8) & 255) / divisor)
+            blue = min(1, CGFloat((value >> 16) & 255) / divisor)
+        }
+    }
 
     private(set) var width = 0
     private(set) var height = 0
     private(set) var buffer: [UInt32] = []
-    private(set) var pops: [Pop] = []
     private(set) var image: CGImage?
-    private var dirty = true
+    private(set) var sourceImage: CGImage?
+    private(set) var unchangedImage: CGImage?
+    private(set) var changes: [Change] = []
+    private(set) var started = 0
+    private(set) var settled = 0
+    private(set) var colors: [UInt32: Components] = [:]
 
-    // Current reveal
-    private var changes: [(index: Int, color: UInt32)] = []
-    private var revealed = 0
+    // A separate, short dissolve handles navigation and changes of canvas size.
+    private(set) var previousImage: CGImage?
+    private(set) var previousWidth = 0
+    private(set) var previousHeight = 0
+    private var transitionStart: CFTimeInterval = 0
     private var start: CFTimeInterval = 0
     private var duration: CFTimeInterval = 0
-    var isAnimating: Bool { revealed < changes.count }
+    private(set) var pixelLife: CFTimeInterval = 0.24
+    private(set) var renderTime: CFTimeInterval = 0
+    var reduceMotion = false
 
-    static let popLife: CFTimeInterval = 0.28
+    var isRevealing: Bool { !changes.isEmpty }
+    var isAnimating: Bool { isRevealing || previousImage != nil }
+    var settledBoundary: Int? { settled > 0 ? changes[settled - 1].index : nil }
 
-    /// Show pixels immediately (no animation).
-    func show(_ frame: PixelFrame) {
+    func transitionProgress(now: CFTimeInterval) -> Double {
+        guard previousImage != nil else { return 1 }
+        return Self.smooth((now - transitionStart) / (reduceMotion ? 0.12 : 0.28))
+    }
+
+    func revealProgress(now: CFTimeInterval) -> Double {
+        guard isRevealing else { return 1 }
+        return min(1, max(0, (now - start) / (duration + pixelLife)))
+    }
+
+    /// Reuse a decoded texture when looping animation frames. Playback itself
+    /// intentionally has no dissolve: frame durations and pixel edges stay exact.
+    func show(_ frame: PixelFrame, image cached: CGImage? = nil,
+              transition: Bool = false, now: CFTimeInterval = CACurrentMediaTime()) {
+        let old = image
+        let oldWidth = width, oldHeight = height
+        finish()
+        if transition, let old {
+            previousImage = old
+            previousWidth = oldWidth
+            previousHeight = oldHeight
+            transitionStart = now
+        }
         width = frame.width
         height = frame.height
         buffer = frame.pixels
-        changes = []
-        revealed = 0
-        pops = []
-        dirty = true
+        image = cached ?? Self.makeImage(buffer, width: width, height: height)
     }
 
-    /// Animate from what is on screen to `frame`. Returns false when the
-    /// sizes differ (caller should `show` instead).
+    /// Each pixel receives an absolute launch time, independent of refresh rate.
+    /// The cosine distribution eases the brush in and out without integer steps.
     @discardableResult
     func animate(to frame: PixelFrame, backlog: Int, now: CFTimeInterval) -> Bool {
         guard frame.width == width, frame.height == height, !buffer.isEmpty else { return false }
         finish()
-        var diff: [(Int, UInt32)] = []
-        diff.reserveCapacity(256)
-        for i in 0..<buffer.count where buffer[i] != frame.pixels[i] {
-            diff.append((i, frame.pixels[i]))
+        var diff: [Int] = []
+        // Walk in brush order directly: O(pixel count), with no large sort on
+        // the main thread when the MCP replaces an entire sprite.
+        for bandY in stride(from: 0, to: height, by: 4) {
+            let rows = min(4, height - bandY)
+            for column in 0..<width {
+                let x = (bandY / 4).isMultiple(of: 2) ? column : width - column - 1
+                for row in 0..<rows {
+                    let index = (bandY + row) * width + x
+                    if buffer[index] != frame.pixels[index] { diff.append(index) }
+                }
+            }
         }
-        changes = Engine.order(diff, width: width)
-        revealed = 0
+        guard !diff.isEmpty else { return true }
+        if reduceMotion {
+            show(frame, transition: true, now: now)
+            return true
+        }
+        let base = min(1.6, max(0.20, 0.16 + Double(diff.count) * 0.0025))
+        // Retain an actual entrance even when catching up to a busy MCP feed.
+        pixelLife = backlog > 6 ? 0.16 : diff.count > 16_384 ? 0.18 : 0.24
+        let requested = backlog > 6 ? 0.18 : backlog > 2 ? base * 0.55 : base
+        // The cosine sweep's peak rate is π/2 times its average. Bound the
+        // active frontier even during a backlog, without dropping any pixels.
+        let densityFloor = Double(diff.count) * pixelLife * .pi / 16_000
+        duration = diff.count == 1 ? 0 : max(requested, densityFloor)
         start = now
-        // Small edits read as quick strokes, big ones as a sweep; a backlog speeds everything up.
-        let base = min(1.6, max(0.22, 0.18 + Double(changes.count) * 0.0035))
-        duration = backlog > 6 ? 0.06 : backlog > 2 ? base * 0.45 : base
+        sourceImage = image
+        var unchanged = buffer
+        colors.removeAll(keepingCapacity: true)
+        changes = diff.enumerated().map { rank, index in
+            let position = diff.count == 1 ? 0 : Double(rank) / Double(diff.count - 1)
+            let delay = acos(1 - 2 * position) / .pi * duration
+            for color in [buffer[index], frame.pixels[index]] where colors[color] == nil {
+                colors[color] = Components(color)
+            }
+            unchanged[index] = 0
+            return Change(index: index, before: buffer[index], after: frame.pixels[index], time: now + delay)
+        }
+        buffer = frame.pixels
+        unchangedImage = Self.makeImage(unchanged, width: width, height: height)
+        image = Self.makeImage(buffer, width: width, height: height)
         return true
     }
 
-    /// Reveal order: strokes of nearby pixels, scanning top to bottom, so
-    /// the image appears the way someone would draw it.
-    private static func order(_ diff: [(Int, UInt32)], width: Int) -> [(index: Int, color: UInt32)] {
-        // Group into 4-row bands, left to right inside a band, alternating
-        // direction per band (boustrophedon) so the "brush" never jumps back.
-        let band = 4
-        return diff.sorted { a, b in
-            let ya = a.0 / width, yb = b.0 / width
-            let ba = ya / band, bb = yb / band
-            if ba != bb { return ba < bb }
-            let xa = a.0 % width, xb = b.0 % width
-            let flip = ba % 2 == 1
-            if xa != xb { return flip ? xa > xb : xa < xb }
-            return ya < yb
-        }.map { (index: $0.0, color: $0.1) }
-    }
-
-    /// Jump to the end of the current reveal.
     func finish() {
-        while revealed < changes.count {
-            let c = changes[revealed]
-            buffer[c.index] = c.color
-            revealed += 1
-        }
-        dirty = true
+        changes.removeAll(keepingCapacity: true)
+        started = 0
+        settled = 0
+        sourceImage = nil
+        unchangedImage = nil
+        previousImage = nil
     }
 
-    /// Advance to `now`; call once per display frame.
     func tick(now: CFTimeInterval) {
-        if revealed < changes.count {
-            let t = duration <= 0 ? 1 : min(1, (now - start) / duration)
-            let eased = t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
-            let target = t >= 1 ? changes.count : Int(Double(changes.count) * eased)
-            while revealed < target {
-                let c = changes[revealed]
-                buffer[c.index] = c.color
-                pops.append(Pop(x: c.index % width, y: c.index / width, color: c.color, t: now))
-                revealed += 1
-            }
-            dirty = true
-        }
-        if !pops.isEmpty {
-            pops.removeAll { now - $0.t > Engine.popLife }
-            // Keep the overlay cheap on huge sweeps.
-            if pops.count > 900 { pops.removeFirst(pops.count - 900) }
-        }
+        renderTime = now
+        if previousImage != nil, transitionProgress(now: now) >= 1 { previousImage = nil }
+        guard isRevealing else { return }
+        while started < changes.count, now >= changes[started].time { started += 1 }
+        while settled < started, now >= changes[settled].time + pixelLife { settled += 1 }
+        if settled == changes.count { finish() }
     }
 
-    /// Current buffer as an image (rebuilt only when pixels changed).
-    func currentImage() -> CGImage? {
-        guard dirty || image == nil, width > 0 else { return image }
-        dirty = false
-        image = Engine.makeImage(buffer, width: width, height: height)
-        return image
+    func currentImage() -> CGImage? { image }
+
+    static func smooth(_ value: Double) -> Double {
+        let t = min(1, max(0, value))
+        return t * t * (3 - 2 * t)
+    }
+
+    /// Critically damped spring, normalized so the final handoff is exact.
+    static func entrance(_ value: Double) -> Double {
+        let t = min(1, max(0, value))
+        return (1 - (1 + 9 * t) * exp(-9 * t)) / (1 - 10 * exp(-9))
+    }
+
+    static func color(_ value: UInt32) -> CGColor {
+        let alpha = CGFloat((value >> 24) & 255) / 255
+        guard alpha > 0 else { return CGColor(gray: 0, alpha: 0) }
+        return CGColor(srgbRed: min(1, CGFloat(value & 255) / 255 / alpha),
+                       green: min(1, CGFloat((value >> 8) & 255) / 255 / alpha),
+                       blue: min(1, CGFloat((value >> 16) & 255) / 255 / alpha), alpha: alpha)
     }
 
     static func makeImage(_ pixels: [UInt32], width: Int, height: Int) -> CGImage? {
+        guard width > 0, height > 0, pixels.count == width * height else { return nil }
         let data = pixels.withUnsafeBytes { Data($0) } as CFData
         guard let provider = CGDataProvider(data: data) else { return nil }
         return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,

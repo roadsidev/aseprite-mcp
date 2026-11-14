@@ -25,6 +25,8 @@ def _events(timeout=10.0):
 
 def test_feed_records_changes_only(monkeypatch):
     monkeypatch.setenv("ASEPRITE_MCP_LIVE", "1")
+    monkeypatch.setenv("PIXEL_LIVE_SESSION", "s-123")
+    monkeypatch.setenv("PIXEL_LIVE_KIND", "sprites")
     path = f"{BASE}/live.aseprite"
     run(canvas.create_canvas(8, 8, path))
     run(canvas.add_layer(path, "ink"))
@@ -35,6 +37,7 @@ def test_feed_records_changes_only(monkeypatch):
     assert [e["tool"] for e in events] == ["create_canvas", "add_layer", "draw_rows"]
     assert events[-1]["caption"] == "Pinta 3 píxeles en «ink», frame 1"
     assert events[-1]["frame"] == 1
+    assert {(e["session"], e["kind"]) for e in events} == {("s-123", "sprites")}
     for e in events:
         assert os.path.exists(os.path.join(BASE, ".live", e["sheet"]))
         assert os.path.exists(os.path.join(BASE, ".live", e["data"]))

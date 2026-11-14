@@ -12,7 +12,10 @@ mkdir -p "$BUNDLE/Contents/MacOS"
 
 # SDK 26.5: the macOS 27 SDK turns @State into a macro whose plugin ships only with Xcode.
 SDK=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+# Keep compiler caches inside the workspace, including in restricted sandboxes.
+mkdir -p .tmp/ModuleCache
 swiftc -O -parse-as-library -swift-version 5 -sdk "$SDK" \
+  -module-cache-path "$PWD/.tmp/ModuleCache" \
   -target arm64-apple-macos26.0 \
   -o "$BUNDLE/Contents/MacOS/PixelLive" \
   Sources/*.swift
