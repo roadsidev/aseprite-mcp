@@ -10,6 +10,8 @@
 > - **Dependencies:** `mcp` 1.x latest without the `cli` extra; unused `httpx` dropped; Docker, Steam and CI files removed.
 >
 > `tests/test_security.py` replays each attack from the audit.
+>
+> **Pixel Live** (`viewer/`): a pinned SwiftUI window that shows every change the MCP makes, pixel by pixel. Set `ASEPRITE_MCP_LIVE=1` and the server writes a sprite sheet plus a Spanish caption per changing tool call to `<first root>/.live/`; the viewer only reads those files. Build with `viewer/build.sh` (Command Line Tools are enough; it installs `/Applications/Pixel Live.app`). Keys: ← → step, space play frames, L live, R replay the session, G grid. `--live-dir <path>` overrides the default `~/Projects/Personal/pixel-mcp/.live`.
 
 A Python MCP server that gives AI assistants full control over [Aseprite](https://www.aseprite.org/) for creating pixel art and animated sprites.
 
@@ -401,7 +403,8 @@ An Aseprite run that takes longer than 60 seconds is stopped and reported as an 
           ],
           "env": {
               "ASEPRITE_PATH": "/Applications/Aseprite.app/Contents/MacOS/aseprite",
-              "ASEPRITE_MCP_ROOTS": "/path/to/your/sprites"
+              "ASEPRITE_MCP_ROOTS": "/path/to/your/sprites",
+              "ASEPRITE_MCP_LIVE": "1"
           }
       }
   }

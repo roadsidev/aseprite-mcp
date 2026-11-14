@@ -9,6 +9,7 @@ import functools
 import inspect
 import math
 
+from . import live
 from .paths import PATH_PARAMS, PathError, confine
 
 MAX_SIDE = 4096
@@ -76,6 +77,15 @@ def guard_tool(fn):
                     bound.arguments[name] = confine(value)
                 except PathError as exc:
                     return f"Invalid {name}: {exc}"
-        return await fn(*bound.args, **bound.kwargs)
+        target = bound.arguments.get("target_filename") or bound.arguments.get("filename")
+        watch = live.enabled() and isinstance(target, str) and bool(target)
+        before = live.fingerprint(target) if watch else None
+        result = await fn(*bound.args, **bound.kwargs)
+        if watch:
+            try:
+                live.feed.record(fn.__name__, dict(bound.arguments), target, before)
+            except OSError:
+                pass  # the live feed must never break a tool
+        return result
 
     return wrapper
