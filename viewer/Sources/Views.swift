@@ -7,6 +7,7 @@ import AppKit
 final class DisplayDriver: NSObject {
     private var link: CADisplayLink?
     private let model: LiveModel
+    let clock = FrameClock()
 
     init(model: LiveModel) {
         self.model = model
@@ -24,12 +25,15 @@ final class DisplayDriver: NSObject {
             let test = SelfTest(directory: URL(fileURLWithPath: args[i + 1], isDirectory: true),
                                 seconds: seconds, captureEvery: every)
             test.model = model
+            test.window = view.window
+            test.captureWindow = args.contains("--capture-window")
             selfTest = test
         }
     }
 
     @objc private func step(_ link: CADisplayLink) {
         model.tick(now: link.targetTimestamp)
+        clock.tick &+= 1
         selfTest?.frame(link: link)
     }
 
@@ -47,6 +51,8 @@ final class SelfTest {
     private let started = CACurrentMediaTime()
     private let seconds: Double
     weak var model: LiveModel?
+    weak var window: NSWindow?
+    var captureWindow = false
     private let captureEvery: Double
 
     init(directory: URL, seconds: Double, captureEvery: Double) {
@@ -60,7 +66,15 @@ final class SelfTest {
         let now = link.timestamp
         if last > 0 { intervals.append((now - last) * 1000) }
         last = now
-        if let model, captureEvery > 0, now - lastCapture >= captureEvery {
+        if captureWindow, captureEvery > 0, now - lastCapture >= captureEvery, let view = window?.contentView,
+           let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            lastCapture = now
+            view.cacheDisplay(in: view.bounds, to: rep)
+            let url = directory.appendingPathComponent(String(format: "win-%03d.png", captures))
+            try? rep.representation(using: .png, properties: [:])?.write(to: url)
+            captures += 1
+        }
+        if !captureWindow, let model, captureEvery > 0, now - lastCapture >= captureEvery {
             lastCapture = now
             let renderNow = CACurrentMediaTime()
             let renderer = ImageRenderer(content: Canvas { gc, size in
@@ -100,14 +114,25 @@ struct DisplayLinkHost: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
+/// Bumped once per display refresh, after the model advanced. Only the canvas
+/// reads it, so only the canvas re-renders every frame.
+@MainActor
+@Observable
+final class FrameClock {
+    var tick = 0
+}
+
 struct PixelCanvas: View {
     let model: LiveModel
+    let clock: FrameClock
 
     var body: some View {
-        TimelineView(.animation) { timeline in
-            Canvas(rendersAsynchronously: false) { gc, size in
-                PixelCanvas.draw(model: model, gc: &gc, size: size, now: CACurrentMediaTime())
-            }
+        // Reading clock.tick here makes this body depend on it: each vsync
+        // produces a new Canvas renderer, so SwiftUI draws again.
+        let tick = clock.tick
+        Canvas(rendersAsynchronously: false) { gc, size in
+            _ = tick
+            PixelCanvas.draw(model: model, gc: &gc, size: size, now: CACurrentMediaTime())
         }
     }
 
@@ -200,7 +225,7 @@ struct ContentView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             Color(white: 0.11).ignoresSafeArea()
-            PixelCanvas(model: model)
+            PixelCanvas(model: model, clock: driver.clock)
                 .padding(.horizontal, 14)
                 .padding(.top, 30)
                 .padding(.bottom, 70)
