@@ -11,7 +11,13 @@
 >
 > `tests/test_security.py` replays each attack from the audit.
 >
-> **Pixel Live** (`viewer/`): a pinned SwiftUI window that shows every change the MCP makes, pixel by pixel. Set `ASEPRITE_MCP_LIVE=1` and the server writes a sprite sheet plus a Spanish caption per changing tool call to `<first root>/.live/`; the viewer only reads those files. Build with `viewer/build.sh` (Command Line Tools are enough; it installs `/Applications/Pixel Live.app`). Keys: ← → step, space play frames, L live, R replay the session, G grid. `--live-dir <path>` overrides the default `~/Projects/Personal/pixel-mcp/.live`.
+> **Pixel Live** (`viewer/`): a SwiftUI window that shows every change the MCP makes, pixel by pixel. Set `ASEPRITE_MCP_LIVE=1` and the server writes a sprite sheet plus a Spanish caption per changing tool call to `<first root>/.live/`. Build with `viewer/build.sh` (Command Line Tools are enough; it installs `/Applications/Pixel Live.app`).
+>
+> - **Two spaces that never mix.** *Sprites* (mint) is the live workshop. *Animaciones* (orange) shows work in progress from animation sessions, plus the library of published animations. **Publicar** freezes the current frames into `<workspace>/animaciones/<slug>/`, holding `frame-NN.png`, `sheet.png` and `meta.json`. `meta.json` records the name, the source session, sprite and step, per-frame durations and sha256, and the file count. The files are read-only (0444/0555), and republishing the same name creates `-v2`.
+> - **Sessions panel (S).** Each session is a persistent `claude -p --resume` conversation, restricted to the aseprite MCP (`--strict-mcp-config --tools '' --allowedTools mcp__aseprite`) and tagged with `PIXEL_LIVE_SESSION`/`PIXEL_LIVE_KIND`. It defaults to Opus 5.5, with a model picker and an effort picker. Under the panel you see the context size against the window, the 1 h cache countdown with a warning before a cold-cache send, cost per turn and per session at API prices, and subscription utilization. State lives in `~/Library/Application Support/Pixel Live/`.
+> - **Window.** The pin button (P) keeps the window above other windows. A transparency slider is also in the top bar.
+> - **Keys:** ← → step, space play, L live, R replay, G grid, I metadata, 1/2 switch space.
+> - **Flags:** `--live-dir <path>` overrides the default `~/Projects/Personal/pixel-mcp/.live`.
 
 A Python MCP server that gives AI assistants full control over [Aseprite](https://www.aseprite.org/) for creating pixel art and animated sprites.
 

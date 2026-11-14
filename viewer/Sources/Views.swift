@@ -7,10 +7,13 @@ import AppKit
 final class DisplayDriver: NSObject {
     private var link: CADisplayLink?
     private let model: LiveModel
+    private let others: [(CFTimeInterval) -> Void]
     let clock = FrameClock()
 
-    init(model: LiveModel) {
+    /// `model` drives self-test captures; `others` advance on the same vsync.
+    init(model: LiveModel, others: [(CFTimeInterval) -> Void] = []) {
         self.model = model
+        self.others = others
     }
 
     func attach(to view: NSView) {
@@ -45,6 +48,7 @@ final class DisplayDriver: NSObject {
 
     @objc private func step(_ link: CADisplayLink) {
         model.tick(now: link.targetTimestamp)
+        for tick in others { tick(link.targetTimestamp) }
         clock.tick &+= 1
         selfTest?.frame(link: link)
     }
@@ -158,80 +162,142 @@ final class FrameClock {
 }
 
 struct ContentView: View {
-    @State var model: LiveModel
+    @State var state: AppState
     @State private var driver: DisplayDriver
+    @State private var window: NSWindow?
     @FocusState private var focused: Bool
     @State private var hovering = false
+    @AppStorage("pinned") private var pinned = true
+    @AppStorage("windowOpacity") private var opacity = 1.0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(model: LiveModel) {
-        _model = State(initialValue: model)
-        _driver = State(initialValue: DisplayDriver(model: model))
+    init(state: AppState) {
+        _state = State(initialValue: state)
+        let animation = state.animation, player = state.player
+        _driver = State(initialValue: DisplayDriver(model: state.sprites, others: [
+            { animation.tick(now: $0) }, { player.tick(now: $0) }]))
     }
+
+    private var model: LiveModel { state.sprites }
 
     var body: some View {
         ZStack {
-            LinearGradient(colors: [Color(red: 0.105, green: 0.119, blue: 0.139), Color(red: 0.065, green: 0.073, blue: 0.088)],
+            LinearGradient(colors: state.space == .sprites
+                           ? [Color(red: 0.105, green: 0.119, blue: 0.139), Color(red: 0.065, green: 0.073, blue: 0.088)]
+                           : [Color(red: 0.135, green: 0.112, blue: 0.098), Color(red: 0.078, green: 0.068, blue: 0.062)],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
                 .ignoresSafeArea()
-            VStack(spacing: 0) {
-                ZStack {
-                    PixelCanvas(model: model, clock: driver.clock)
-                        .opacity(model.steps.isEmpty ? 0 : 1)
-                    if model.steps.isEmpty { emptyState.transition(.opacity) }
+                .animation(.easeOut(duration: 0.3), value: state.space)
+            HStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    TopBar(state: state, pinned: $pinned, opacity: $opacity, window: window)
+                    if state.space == .sprites { spriteStage } else {
+                        AnimationStage(state: state, clock: driver.clock, hovering: hovering)
+                    }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.horizontal, 24).padding(.top, 30).padding(.bottom, 4)
-                PlaybackControls(model: model, clock: driver.clock, hovering: hovering)
-                    .padding(.horizontal, 12).padding(.bottom, 12)
+                .frame(minWidth: 340)
+                if state.showSessions {
+                    Divider().opacity(0.5)
+                    SessionPanel(state: state)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
             }
         }
         .preferredColorScheme(.dark)
         .background(DisplayLinkHost(driver: driver))
+        .background(WindowAccessor { w in
+            if window !== w { DispatchQueue.main.async { window = w } }
+            let level: NSWindow.Level = pinned ? .floating : .normal
+            if w.level != level { w.level = level }
+            let alpha = CGFloat(max(0.25, min(1, opacity)))
+            if abs(w.alphaValue - alpha) > 0.001 { w.alphaValue = alpha }
+        })
         .focusable()
         .focusEffectDisabled()
         .focused($focused)
         .onAppear {
             focused = true
             model.engine.reduceMotion = reduceMotion
-            model.start()
+            state.animation.engine.reduceMotion = reduceMotion
+            state.player.reduceMotion = reduceMotion
+            state.start()
+            if CommandLine.arguments.contains("--show-sessions") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    TopBar.toggleSessions(state: state, window: window)
+                }
+            }
         }
-        .onChange(of: reduceMotion) { _, value in model.engine.reduceMotion = value }
+        .onChange(of: reduceMotion) { _, value in
+            model.engine.reduceMotion = value
+            state.animation.engine.reduceMotion = value
+            state.player.reduceMotion = value
+        }
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.25), value: model.steps.isEmpty)
-        .onKeyPress(.leftArrow) { model.stepBy(-1); return .handled }
-        .onKeyPress(.rightArrow) { model.stepBy(1); return .handled }
-        .onKeyPress(.space) { model.togglePlay(); return .handled }
-        .onKeyPress(characters: .init(charactersIn: "lLgGrR")) { press in
-            switch press.characters.lowercased() {
-            case "l": model.toggleLive()
-            case "g": model.showGrid.toggle()
-            case "r": model.replayAll()
-            default: break
+        .animation(.easeOut(duration: 0.2), value: state.showInfo)
+        .onKeyPress(.leftArrow) { key { arrow(-1) } }
+        .onKeyPress(.rightArrow) { key { arrow(1) } }
+        .onKeyPress(.space) { key { space() } }
+        .onKeyPress(characters: .init(charactersIn: "lLgGrRiIpPsS12")) { press in
+            key {
+                switch press.characters.lowercased() {
+                case "l": state.liveModel.toggleLive()
+                case "g": state.liveModel.showGrid.toggle()
+                case "r": state.liveModel.replayAll()
+                case "i": state.showInfo.toggle()
+                case "p": pinned.toggle()
+                case "s": TopBar.toggleSessions(state: state, window: window)
+                case "1": state.space = .sprites
+                case "2": state.space = .animaciones
+                default: break
+                }
             }
-            return .handled
+        }
+    }
+
+    /// Shortcuts never steal keys from the chat field.
+    private func key(_ action: () -> Void) -> KeyPress.Result {
+        if window?.firstResponder is NSText { return .ignored }
+        action()
+        return .handled
+    }
+
+    private var inLibrary: Bool { state.space == .animaciones && state.animationTab == .biblioteca }
+
+    private func arrow(_ delta: Int) {
+        if inLibrary { state.player.step(delta) } else { state.liveModel.stepBy(delta) }
+    }
+
+    private func space() {
+        if inLibrary { state.player.togglePlay() } else { state.liveModel.togglePlay() }
+    }
+
+    private var spriteStage: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                PixelCanvas(model: model, clock: driver.clock)
+                    .opacity(model.steps.isEmpty ? 0 : 1)
+                if model.steps.isEmpty { emptyState.transition(.opacity) }
+                if state.showInfo, let step = model.currentStep {
+                    InfoOverlay(rows: StepInfo.rows(step, sessions: state.sessions))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 4)
+            PlaybackControls(model: model, clock: driver.clock, hovering: hovering)
+                .padding(.horizontal, 12).padding(.bottom, 12)
         }
     }
 
     private var emptyState: some View {
         VStack(spacing: 12) {
-            Image(systemName: "square.stack.3d.up")
-                .font(.system(size: 29, weight: .light))
-                .foregroundStyle(.mint.opacity(0.8))
-                .frame(width: 66, height: 66)
-                .background(.white.opacity(0.035), in: .rect(cornerRadius: 20))
-                .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(.white.opacity(0.08), lineWidth: 0.5))
-            VStack(spacing: 5) {
-                Text("Esperando al MCP…")
-                    .font(.system(size: 15, weight: .medium))
-                Text("Cada cambio, píxel a píxel.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-            }
+            StageEmpty(symbol: "square.stack.3d.up", accent: .mint, title: "Esperando al MCP…",
+                       detail: "Cada cambio de sprite, píxel a píxel. Las animaciones van aparte (2).")
+                .frame(maxHeight: 200)
             Label(model.connected ? "Conectado · esperando un sprite" : "Escuchando cambios locales", systemImage: "antenna.radiowaves.left.and.right")
                 .font(.system(size: 10)).foregroundStyle(.tertiary)
                 .help(model.directory.path)
         }
-        .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

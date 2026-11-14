@@ -21,27 +21,6 @@ struct PlaybackControls: View {
     var body: some View {
         GlassEffectContainer(spacing: 10) {
             VStack(spacing: 8) {
-                HStack {
-                    Spacer()
-                    if toolsVisible, model.currentStep != nil {
-                        HStack(spacing: 2) {
-                            tool("arrow.counterclockwise", help: "Repetir los cambios de este sprite (R)") { model.replayAll() }
-                            tool(model.showGrid ? "square.grid.3x3.fill" : "square.grid.3x3", help: "Mostrar u ocultar la grilla (G)") { model.showGrid.toggle() }
-                                .foregroundStyle(model.showGrid ? Color.mint : Color.primary)
-                            tool("chevron.left", help: "Paso anterior (←)") { model.stepBy(-1) }
-                                .disabled((model.shownIndex ?? 0) <= 0)
-                            tool("chevron.right", help: "Paso siguiente (→)") { model.stepBy(1) }
-                                .disabled((model.shownIndex ?? 0) >= model.steps.count - 1)
-                        }
-                        .padding(4)
-                        .glassEffect(.regular.interactive(), in: .capsule)
-                        .glassEffectID("tools", in: glass)
-                        .glassEffectTransition(.matchedGeometry)
-                        .transition(.opacity.combined(with: .offset(y: 5)))
-                    }
-                }
-                .frame(height: 34)
-
                 VStack(alignment: .leading, spacing: 9) {
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
                         Text(caption)
@@ -111,6 +90,28 @@ struct PlaybackControls: View {
                 .padding(.horizontal, 14).padding(.vertical, 12)
                 .glassEffect(.regular, in: .rect(cornerRadius: 22))
                 .glassEffectID("transport", in: glass)
+                // Hover tools float above the transport, so they never take canvas height.
+                .overlay(alignment: .topTrailing) {
+                    ZStack {
+                    if toolsVisible, model.currentStep != nil {
+                        HStack(spacing: 2) {
+                            tool("arrow.counterclockwise", help: "Repetir los cambios de este sprite (R)") { model.replayAll() }
+                            tool(model.showGrid ? "square.grid.3x3.fill" : "square.grid.3x3", help: "Mostrar u ocultar la grilla (G)") { model.showGrid.toggle() }
+                                .foregroundStyle(model.showGrid ? Color.mint : Color.primary)
+                            tool("chevron.left", help: "Paso anterior (←)") { model.stepBy(-1) }
+                                .disabled((model.shownIndex ?? 0) <= 0)
+                            tool("chevron.right", help: "Paso siguiente (→)") { model.stepBy(1) }
+                                .disabled((model.shownIndex ?? 0) >= model.steps.count - 1)
+                        }
+                        .padding(4)
+                        .glassEffect(.regular.interactive(), in: .capsule)
+                        .glassEffectID("tools", in: glass)
+                        .glassEffectTransition(.matchedGeometry)
+                        .transition(.opacity.combined(with: .offset(y: 5)))
+                    }
+                    }
+                    .offset(y: -40)
+                }
             }
         }
         .animation(motion, value: toolsVisible)

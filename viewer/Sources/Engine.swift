@@ -64,6 +64,37 @@ final class Engine {
         return min(1, max(0, (now - start) / (duration + pixelLife)))
     }
 
+    /// Forget everything on screen (e.g. a session filter with no steps yet).
+    func clear() {
+        finish()
+        width = 0
+        height = 0
+        buffer = []
+        image = nil
+        previousImage = nil
+        displayScale = 0
+    }
+
+    // MARK: - Animated display scale
+
+    /// Points per sprite pixel actually drawn. It follows the layout target
+    /// with a critically damped approach, so resizing the window or switching
+    /// sprites glides instead of jumping between whole-number scales.
+    private(set) var displayScale: CGFloat = 0
+    private var scaleClock: CFTimeInterval = 0
+
+    func approachScale(_ target: CGFloat, now: CFTimeInterval, immediate: Bool = false) -> CGFloat {
+        defer { scaleClock = now }
+        guard displayScale > 0, !immediate, !reduceMotion else { displayScale = target; return target }
+        let dt = min(0.1, max(0, now - scaleClock))
+        displayScale += (target - displayScale) * CGFloat(1 - exp(-dt * 16))
+        if abs(displayScale - target) < 0.004 { displayScale = target }
+        return displayScale
+    }
+
+    var isScaling: Bool { displayScale > 0 && scaleTarget != displayScale }
+    var scaleTarget: CGFloat = 0
+
     /// Reuse a decoded texture when looping animation frames. Playback itself
     /// intentionally has no dissolve: frame durations and pixel edges stay exact.
     func show(_ frame: PixelFrame, image cached: CGImage? = nil,

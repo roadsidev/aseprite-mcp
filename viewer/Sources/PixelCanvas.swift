@@ -4,35 +4,54 @@ import AppKit
 struct PixelCanvas: View {
     let model: LiveModel
     let clock: FrameClock
+    @Environment(\.displayScale) private var backing
 
     var body: some View {
         // This dependency must live in body, not just in Canvas's renderer.
         // DisplayDriver advances the engine first, then bumps this value.
         let tick = clock.tick
+        let backing = backing
         Canvas(rendersAsynchronously: false) { gc, size in
             _ = tick
-            Self.draw(model: model, gc: &gc, size: size, now: model.engine.renderTime)
+            Self.draw(model: model, gc: &gc, size: size, now: model.engine.renderTime, backing: backing)
         }
         .accessibilityLabel("Lienzo de pixel art")
     }
 
-    static func spriteRect(width: Int, height: Int, size: CGSize) -> CGRect {
-        guard width > 0, height > 0 else { return .zero }
+    /// Largest scale that fits and lands every sprite pixel on whole device
+    /// pixels (e.g. 2.5 pt on a 2× display = 5 device pixels): crisp, but it
+    /// fills the space far better than whole-point steps.
+    static func targetScale(width: Int, height: Int, size: CGSize, backing: CGFloat) -> CGFloat {
+        guard width > 0, height > 0 else { return 1 }
+        let b = max(1, backing)
         let fit = min(max(1, size.width - 8) / CGFloat(width), max(1, size.height - 8) / CGFloat(height))
-        // Whole-number magnification; when the sprite cannot fit at 1×, use
-        // reciprocal integer reduction instead of clipping it outside the view.
-        let scale = fit >= 1 ? max(1, floor(fit)) : 1 / ceil(1 / fit)
-        let w = CGFloat(width) * scale, h = CGFloat(height) * scale
-        return CGRect(x: ((size.width - w) / 2).rounded(), y: ((size.height - h) / 2).rounded(), width: w, height: h)
+        if fit * b >= 1 { return max(1 / b, floor(fit * b) / b) }
+        return 1 / (b * ceil(1 / (fit * b)))
     }
 
-    static func draw(model: LiveModel, gc: inout GraphicsContext, size: CGSize, now: CFTimeInterval) {
+    static func spriteRect(width: Int, height: Int, size: CGSize, scale: CGFloat, backing: CGFloat = 2) -> CGRect {
+        guard width > 0, height > 0 else { return .zero }
+        let b = max(1, backing)
+        let w = CGFloat(width) * scale, h = CGFloat(height) * scale
+        return CGRect(x: (((size.width - w) / 2) * b).rounded() / b, y: (((size.height - h) / 2) * b).rounded() / b,
+                      width: w, height: h)
+    }
+
+    static func spriteRect(width: Int, height: Int, size: CGSize, backing: CGFloat = 2) -> CGRect {
+        spriteRect(width: width, height: height, size: size,
+                   scale: targetScale(width: width, height: height, size: size, backing: backing), backing: backing)
+    }
+
+    static func draw(model: LiveModel, gc: inout GraphicsContext, size: CGSize, now: CFTimeInterval, backing: CGFloat = 2) {
         let engine = model.engine
         guard let image = engine.currentImage(), engine.width > 0 else { return }
-        let rect = spriteRect(width: engine.width, height: engine.height, size: size)
+        let target = targetScale(width: engine.width, height: engine.height, size: size, backing: backing)
+        engine.scaleTarget = target
+        let animatedScale = engine.approachScale(target, now: now)
+        let rect = spriteRect(width: engine.width, height: engine.height, size: size, scale: animatedScale, backing: backing)
         let scale = rect.width / CGFloat(engine.width)
         let progress = engine.transitionProgress(now: now)
-        let oldRect = spriteRect(width: engine.previousWidth, height: engine.previousHeight, size: size)
+        let oldRect = spriteRect(width: engine.previousWidth, height: engine.previousHeight, size: size, backing: backing)
         let outline = engine.previousImage == nil ? rect : CGRect(
             x: oldRect.minX + (rect.minX - oldRect.minX) * progress,
             y: oldRect.minY + (rect.minY - oldRect.minY) * progress,
@@ -150,7 +169,7 @@ struct PixelCanvas: View {
         context.restoreGState()
     }
 
-    private static func drawChecker(gc: inout GraphicsContext, rect: CGRect, scale: CGFloat) {
+    static func drawChecker(gc: inout GraphicsContext, rect: CGRect, scale: CGFloat) {
         gc.fill(Path(rect), with: .color(Color(cgColor: checkerDark)))
         let tile = CGFloat(max(2, Int(ceil(8 / scale)))) * scale
         var path = Path()

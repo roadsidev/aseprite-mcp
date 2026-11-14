@@ -2,17 +2,16 @@ import SwiftUI
 
 @main
 struct PixelLiveApp: App {
-    @State private var model = LiveModel(directory: PixelLiveApp.liveDirectory())
+    @State private var state = AppState(liveDirectory: PixelLiveApp.liveDirectory())
 
     var body: some Scene {
         Window("Pixel Live", id: "main") {
-            ContentView(model: model)
-                .frame(minWidth: 300, minHeight: 380)
+            ContentView(state: state)
+                .frame(minWidth: 340, minHeight: 400)
         }
         .windowStyle(.hiddenTitleBar)
-        .windowLevel(.floating)
         .windowBackgroundDragBehavior(.enabled)
-        .defaultSize(width: 400, height: 480)
+        .defaultSize(width: 420, height: 520)
         .windowResizability(.contentMinSize)
     }
 

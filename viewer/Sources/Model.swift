@@ -25,9 +25,36 @@ final class LiveModel {
     @ObservationIgnored private var frameImages: [Int: CGImage] = [:]
 
     let directory: URL
+    /// Which steps this model shows: design work and animation work never mix.
+    let accepts: @Sendable (Step) -> Bool
+    /// Animation work loops its frames whenever nothing is being revealed.
+    let autoPlay: Bool
+    /// Only show steps from this Claude session (nil = all accepted steps).
+    var sessionFilter: String? = nil {
+        didSet { if sessionFilter != oldValue { rebuild() } }
+    }
+    @ObservationIgnored private var all: [Step] = []
 
-    init(directory: URL) {
+    init(directory: URL, accepts: @escaping @Sendable (Step) -> Bool = { _ in true }, autoPlay: Bool = false) {
         self.directory = directory
+        self.accepts = accepts
+        self.autoPlay = autoPlay
+        self.playingFrames = autoPlay
+    }
+
+    private func visible(_ step: Step) -> Bool {
+        accepts(step) && (sessionFilter == nil || step.session == sessionFilter)
+    }
+
+    private func rebuild() {
+        pending.removeAll()
+        replaying = false
+        engine.finish()
+        steps = all.filter(visible)
+        shownIndex = nil
+        frameImages.removeAll(keepingCapacity: true)
+        if !steps.isEmpty { display(index: steps.count - 1, animated: false) }
+        else { engine.clear() }
     }
 
     func start() {
@@ -41,8 +68,10 @@ final class LiveModel {
 
     var currentStep: Step? { shownIndex.map { steps[$0] } }
 
-    private func receive(_ new: [Step], backlog: Bool) {
+    private func receive(_ incoming: [Step], backlog: Bool) {
         connected = true
+        all.append(contentsOf: incoming)
+        let new = incoming.filter(visible)
         guard !new.isEmpty else { return }
         arrival &+= 1
         let first = steps.count

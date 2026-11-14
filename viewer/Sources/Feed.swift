@@ -19,8 +19,11 @@ struct Step: Identifiable {
     let focusFrame: Int?   // 0-based frame the tool targeted, if any
     let timestamp: Double
     let frames: [PixelFrame]
+    var session: String? = nil   // Claude session that made the change (Pixel Live sessions only)
+    var kind: String? = nil      // "sprites" | "animacion"; nil for other MCP clients
 
     var spriteName: String { (sprite as NSString).lastPathComponent }
+    var isAnimationWork: Bool { kind == "animacion" }
 }
 
 /// Tails <live dir>/events.jsonl and decodes each announced sprite sheet.
@@ -110,7 +113,9 @@ final class LiveFeed {
                     sprite: obj["sprite"] as? String ?? "",
                     focusFrame: focus,
                     timestamp: obj["ts"] as? Double ?? 0,
-                    frames: frames)
+                    frames: frames,
+                    session: obj["session"] as? String,
+                    kind: obj["kind"] as? String)
     }
 
     static func decodePNG(_ url: URL) -> PixelFrame? {
