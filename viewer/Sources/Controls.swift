@@ -60,24 +60,8 @@ struct PlaybackControls: View {
 
                     HStack(spacing: 10) {
                         liveButton
-                        if let step = model.currentStep, step.frames.count > 1 {
-                            Button { model.togglePlay() } label: {
-                                Image(systemName: model.playingFrames ? "pause.fill" : "play.fill")
-                                    .contentTransition(.symbolEffect(.replace))
-                                    .frame(width: 24, height: 22)
-                            }
-                            .buttonStyle(.plain)
-                            .focused($focusedControl, equals: "play")
-                            .help(model.playingFrames ? "Pausar la animación (espacio)" : "Reproducir la animación (espacio)")
-                            .accessibilityLabel(model.playingFrames ? "Pausar" : "Reproducir")
-                            Text("\(model.shownFrame + 1) / \(step.frames.count)")
-                                .font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary)
-                                // Do not start a text animation for every playback frame.
-                                .transaction { $0.animation = nil }
-                                .accessibilityLabel("Fotograma \(model.shownFrame + 1) de \(step.frames.count)")
-                        }
                         Spacer(minLength: 0)
-                        Text(model.steps.isEmpty ? "Sin pasos" : "\((model.shownIndex ?? 0) + 1) de \(model.steps.count)")
+                        Text(model.steps.isEmpty ? "Sin cambios" : "Cambio \((model.shownIndex ?? 0) + 1) de \(model.steps.count)")
                             .font(.system(size: 10).monospacedDigit())
                             .foregroundStyle(.secondary)
                             .contentTransition(.numericText())
@@ -85,7 +69,6 @@ struct PlaybackControls: View {
                             .animation(motion, value: model.steps.count)
                     }
                     .font(.system(size: 11, weight: .medium))
-                    .animation(motion, value: model.currentStep?.frames.count)
                 }
                 .padding(.horizontal, 14).padding(.vertical, 12)
                 .glassEffect(.regular, in: .rect(cornerRadius: 22))

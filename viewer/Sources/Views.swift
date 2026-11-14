@@ -269,7 +269,9 @@ struct ContentView: View {
     }
 
     private func space() {
-        if inLibrary { state.player.togglePlay() } else { state.liveModel.togglePlay() }
+        // The sprite workshop is a gallery of changes: nothing to play there.
+        if inLibrary { state.player.togglePlay() }
+        else if state.space == .animaciones { state.animation.togglePlay() }
     }
 
     private var spriteStage: some View {
