@@ -1,8 +1,19 @@
 # Aseprite MCP Tools
 
+> **Hardened fork** of [diivi/aseprite-mcp](https://github.com/diivi/aseprite-mcp) for local stdio use. Changes from upstream:
+>
+> - **No code execution tools:** `run_lua_script` and the HTTP preview server (`start_preview_server` / `stop_preview_server`) are removed.
+> - **Lua injection fixed:** `draw_pixels` / `draw_pixels_at` coordinates must be integers; layer names in `audit_animation` / `animation_sanitize` are escaped; Lua-built JSON reports escape names.
+> - **Workspace confinement:** every path parameter is resolved (symlinks included) and must live under `ASEPRITE_MCP_ROOTS`; paths reach Aseprite absolute, so a file name can never be read as a CLI option. Unknown CLI options are refused.
+> - **Size limits** on canvases, iso boxes, text, frame counts and pixel reads, checked before any work starts.
+> - **Explicit configuration:** `ASEPRITE_PATH` must be absolute; no `.env` loading and no `PATH` lookup.
+> - **Dependencies:** `mcp` 1.x latest without the `cli` extra; unused `httpx` dropped; Docker, Steam and CI files removed.
+>
+> `tests/test_security.py` replays each attack from the audit.
+
 A Python MCP server that gives AI assistants full control over [Aseprite](https://www.aseprite.org/) for creating pixel art and animated sprites.
 
-**123 tools across 18 categories** — canvas, drawing, layers, animation, palettes, effects, slices, tilemaps, exports, visual-feedback/analysis tools, and a raw Lua escape hatch. The tool set is designed so an LLM has everything it needs to produce *good* pixel art, not just primitives: shading ramps with hue shifting, ordered dithering, outlines, retro palette presets with quantization, onion-skin renders, and frame diffing, bounds and lint checks for animation work.
+**120 tools across 17 categories** — canvas, drawing, layers, animation, palettes, effects, slices, tilemaps, exports and visual-feedback/analysis tools. The tool set is designed so an LLM has everything it needs to produce *good* pixel art, not just primitives: shading ramps with hue shifting, ordered dithering, outlines, retro palette presets with quantization, onion-skin renders, and frame diffing, bounds and lint checks for animation work.
 
 ## Examples
 
@@ -92,8 +103,7 @@ The Fable 5 tasks recreate the benchmark from [Draw Me a Swordsman](https://ljvm
 | [Analysis & Visual Feedback](#analysis--visual-feedback) | 6 | Sprite previews the model can see, onion-skin renders, frame diffing, bounds, lint, color statistics |
 | [Quality](#quality) | 4 | Validate and sanitize animation consistency |
 | [Scene](#scene) | 1 | Copy layers between sprite files |
-| [Preview & Guide](#preview--guide) | 3 | Local HTTP preview server, workflow guide |
-| [Scripting](#scripting) | 1 | Raw Lua escape hatch for anything not covered above |
+| [Guide](#guide) | 1 | Animation workflow guide |
 
 ### Canvas
 
@@ -347,20 +357,13 @@ Batch-mode equivalents of what a human artist gets from the Aseprite UI.
 |------|-------------|
 | `copy_layers_between_sprites` | Copy layers by name from one .aseprite file to another |
 
-### Preview & Guide
+### Guide
 
 | Tool | Description |
 |------|-------------|
-| `start_preview_server` / `stop_preview_server` | Serve exported files over local HTTP |
 | `animation_workflow_guide` | How to animate well: key poses, anticipation, squash and stretch, timing (`character`, `idle`, `environment`) |
 
 The server also sends short pixel-art rules as MCP `instructions` when a client connects (silhouette first, one light direction, clean lines, check each pass), so the model gets them without calling anything.
-
-### Scripting
-
-| Tool | Description |
-|------|-------------|
-| `run_lua_script` | Execute arbitrary Aseprite Lua ([API docs](https://www.aseprite.org/api/)) in batch mode. The last resort, for what no dedicated tool covers: one script can batch many operations into a single Aseprite launch. Remember to `spr:saveAs(spr.filename)` and `print()` your results. ⚠️ Runs unrestricted code on the host — only pass scripts you trust. |
 
 ## Recommended Workflow for LLMs
 
@@ -371,51 +374,16 @@ The server also sends short pixel-art rules as MCP `instructions` when a client 
 5. **Shade with intent**: `adjust_hsl` for shadow layers, `apply_dither_gradient` for blends, `outline_cel` for readability.
 6. **Animate with the cel tools**: `propagate_cels`, then `tween_cel_positions_eased` / `oscillate_cel_positions`; verify with `view_sprite`, `compare_frames` and `get_bounds`; export with `export_animation` or `export_tag`.
 
-## Docker Usage
-
-### Quick Start
-
-Build and run the Docker image:
-```bash
-docker build -t aseprite-mcp:latest .
-docker run -it --rm aseprite-mcp:latest
-```
-
-Or use the provided build scripts:
-- **Linux/macOS**: `chmod +x build-docker.sh && ./build-docker.sh`
-- **Windows**: `.\build-docker.ps1`
-
-### Using Docker Compose
-```bash
-# Production
-docker-compose up aseprite-mcp
-
-# Development mode
-docker-compose --profile dev up aseprite-mcp-dev
-```
-
-See [DOCKER.md](DOCKER.md) for detailed Docker setup instructions.
-
-### Optional: Install Aseprite via Steam
-
-To have the container install Aseprite via SteamCMD at startup, provide Steam credentials:
-
-```powershell
-# Create a .env with STEAM_USERNAME/STEAM_PASSWORD (and optional STEAM_GUARD_CODE)
-# Then
-docker run --rm -i --env-file .env aseprite-mcp:latest
-```
-
-If installed, the binary will be at `/opt/steamapps/common/Aseprite/aseprite` and `ASEPRITE_PATH` will be picked up automatically.
-
 ## Local Installation
 
 ### Prerequisites
 - Python 3.13+
 - `uv` package manager
-- Aseprite (set `ASEPRITE_PATH` in `.env` if it is not on your PATH)
+- Aseprite
+- `ASEPRITE_PATH`: absolute path of the Aseprite executable (required)
+- `ASEPRITE_MCP_ROOTS`: directory (or `:`-separated directories) the tools may read and write (required)
 
-An Aseprite run that takes longer than 60 seconds is stopped and reported as an error. Set `ASEPRITE_TIMEOUT_SECONDS` in `.env` to change that limit.
+An Aseprite run that takes longer than 60 seconds is stopped and reported as an error. Set `ASEPRITE_TIMEOUT_SECONDS` in the server's `env` to change that limit.
 
 ### Installation:
 ```json
@@ -427,9 +395,14 @@ An Aseprite run that takes longer than 60 seconds is stopped and reported as an 
               "--directory",
               "/path/to/repo",
               "run",
+              "--locked",
               "-m",
               "aseprite_mcp"
-          ]
+          ],
+          "env": {
+              "ASEPRITE_PATH": "/Applications/Aseprite.app/Contents/MacOS/aseprite",
+              "ASEPRITE_MCP_ROOTS": "/path/to/your/sprites"
+          }
       }
   }
 }

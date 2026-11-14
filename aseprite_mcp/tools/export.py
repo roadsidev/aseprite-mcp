@@ -1,3 +1,5 @@
+import re
+import time
 import glob
 import os
 import tempfile
@@ -118,6 +120,7 @@ async def export_frame(
     if not output_filename.lower().endswith(".png"):
         output_filename = f"{output_filename}.png"
 
+    started = time.time() - 1
     f0 = frame_index - 1  # CLI --frame-range is 0-based
     args = [
         "--batch", filename,
@@ -133,7 +136,13 @@ async def export_frame(
     # the filename; rename the produced file when that happens.
     if not os.path.exists(output_filename):
         base, ext = os.path.splitext(output_filename)
-        candidates = sorted(glob.glob(f"{base}*{ext}"))
+        # Only a file Aseprite just wrote with a numeric suffix qualifies:
+        # never move a pre-existing file that merely shares the prefix.
+        suffixed = re.compile(re.escape(os.path.basename(base)) + r"\d+" + re.escape(ext) + r"$")
+        candidates = sorted(
+            c for c in glob.glob(glob.escape(base) + "*" + glob.escape(ext))
+            if suffixed.match(os.path.basename(c)) and os.path.getmtime(c) >= started
+        )
         if candidates:
             os.replace(candidates[0], output_filename)
         else:

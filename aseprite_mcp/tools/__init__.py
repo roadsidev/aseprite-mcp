@@ -2,7 +2,6 @@ from . import canvas
 from . import drawing
 from . import export
 from . import animation
-from . import preview
 from . import palette
 from . import scene
 from . import guide
@@ -15,7 +14,6 @@ from . import fx
 from . import analysis
 from . import slices
 from . import tilemap
-from . import script
 from . import text
 from . import native_fx
 from . import view

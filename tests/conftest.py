@@ -17,6 +17,9 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+# Tools refuse paths outside ASEPRITE_MCP_ROOTS; the scratch dir is the root.
+os.environ["ASEPRITE_MCP_ROOTS"] = "/tmp/ase-pytest"
+
 import aseprite_mcp.tools  # noqa: F401  (registers all tools)
 from aseprite_mcp.tools import canvas, drawing
 

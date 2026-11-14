@@ -31,7 +31,7 @@ def _parse_layer_frame_ranges(layer_frame_ranges: List[str] | None) -> str:
     ranges_lua = "{"
     for layer, spans in ranges.items():
         span_list = ",".join([f"{{{s},{e}}}" for s, e in spans])
-        ranges_lua += f"[\"{layer}\"]={{{span_list}}},"
+        ranges_lua += f"[\"{lua_escape(layer)}\"]={{{span_list}}},"
     ranges_lua += "}"
     return ranges_lua
 
@@ -51,7 +51,7 @@ def _parse_overlap_pairs(overlap_pairs: List[str] | None) -> str:
             right = right.strip()
             if left and right:
                 pairs.append((left, right))
-    return "{" + ",".join([f"{{\"{a}\",\"{b}\"}}" for a, b in pairs]) + "}"
+    return "{" + ",".join([f"{{\"{lua_escape(a)}\",\"{lua_escape(b)}\"}}" for a, b in pairs]) + "}"
 
 @mcp.tool()
 async def ensure_layers_present(
@@ -144,6 +144,9 @@ async def validate_scene(
     layers_lua = "{" + ",".join([f"\"{lua_escape(name)}\"" for name in required_layers]) + "}"
 
     script = """
+    local function jstr(s)
+        return '"' .. (tostring(s):gsub('[%c"\\\\]', function(c) return string.format("\\\\u%04x", c:byte()) end)) .. '"'
+    end
     local spr = app.activeSprite
     if not spr then print("ERROR:No active sprite") return end
 
@@ -185,13 +188,13 @@ async def validate_scene(
     table.insert(parts, "\\"range\\":{\\"start\\":" .. start_idx .. ",\\"end\\":" .. end_idx .. "},")
     table.insert(parts, "\\"missing_layers\\":[")
     for i, name in ipairs(missing_layers) do
-        table.insert(parts, "\\""..name.."\\"")
+        table.insert(parts, jstr(name))
         if i < #missing_layers then table.insert(parts, ",") end
     end
     table.insert(parts, "],")
     table.insert(parts, "\\"missing_cels\\":[")
     for i, entry in ipairs(missing_cels) do
-        table.insert(parts, '{"layer":"' .. entry.layer .. '","frame":' .. entry.frame .. '}')
+        table.insert(parts, '{"layer":' .. jstr(entry.layer) .. ',"frame":' .. entry.frame .. '}')
         if i < #missing_cels then table.insert(parts, ",") end
     end
     table.insert(parts, "]}")
@@ -506,6 +509,9 @@ async def animation_sanitize(
     ignore_full_canvas_flag = "true" if ignore_full_canvas_overlaps else "false"
 
     script = f"""
+    local function jstr(s)
+        return '"' .. (tostring(s):gsub('[%c"\\\\]', function(c) return string.format("\\\\u%04x", c:byte()) end)) .. '"'
+    end
     local spr = app.activeSprite
     if not spr then print("ERROR:No active sprite") return end
 
@@ -785,7 +791,7 @@ async def animation_sanitize(
     table.insert(parts, "\\"overlaps_truncated\\":" .. tostring(overlaps_truncated) .. ",")
     table.insert(parts, "\\"inactive_layers\\":[")
     for i, name in ipairs(analysis.inactive_layers) do
-        table.insert(parts, '\\"' .. name .. '\\"')
+        table.insert(parts, jstr(name))
         if i < #analysis.inactive_layers then table.insert(parts, ",") end
     end
     table.insert(parts, "]")
@@ -798,7 +804,7 @@ async def animation_sanitize(
             local stats = layer_stats[layer.name]
             if stats then
                 count = count + 1
-                table.insert(parts, '\\"' .. layer.name .. '\\":{{')
+                table.insert(parts, jstr(layer.name) .. ':{{')
                 table.insert(parts, '\\"frames_active\\":' .. stats.frames_active .. ",")
                 table.insert(parts, '\\"cel_count\\":' .. stats.cel_count .. ",")
                 table.insert(parts, '\\"full_canvas_cels\\":' .. stats.full_canvas_cels .. ",")
@@ -829,7 +835,7 @@ async def animation_sanitize(
     if #alerts > 0 then
         table.insert(parts, ",\\"alerts\\":[")
         for i, msg in ipairs(alerts) do
-            table.insert(parts, '\\"' .. msg .. '\\"')
+            table.insert(parts, jstr(msg))
             if i < #alerts then table.insert(parts, ",") end
         end
         table.insert(parts, "]")
@@ -838,7 +844,7 @@ async def animation_sanitize(
     if #overlaps > 0 then
         table.insert(parts, ",\\"overlap_samples\\":[")
         for i, entry in ipairs(overlaps) do
-            table.insert(parts, "{{\\"frame\\":" .. entry.frame .. ",\\"a\\":\\"" .. entry.a .. "\\",\\"b\\":\\"" .. entry.b .. "\\"")
+            table.insert(parts, "{{\\"frame\\":" .. entry.frame .. ",\\"a\\":" .. jstr(entry.a) .. ",\\"b\\":" .. jstr(entry.b))
             if entry.a_bounds then
                 table.insert(parts, ",\\"a_bounds\\":[" .. entry.a_bounds[1] .. "," .. entry.a_bounds[2] .. "," .. entry.a_bounds[3] .. "," .. entry.a_bounds[4] .. "]")
                 table.insert(parts, ",\\"b_bounds\\":[" .. entry.b_bounds[1] .. "," .. entry.b_bounds[2] .. "," .. entry.b_bounds[3] .. "," .. entry.b_bounds[4] .. "]")

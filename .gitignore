@@ -50,3 +50,6 @@ ENV/
 !examples/swordsman/opus_redraw_slash.gif
 !examples/swordsman_vs_slime/swordsman_vs_slime.gif
 !examples/cosy_room/cosy_room.gif
+
+# uv
+.venv/

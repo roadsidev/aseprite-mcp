@@ -45,6 +45,8 @@ baseline.
 
 from __future__ import annotations
 
+from .paths import PathError, confine, is_within
+
 import json
 import os
 from dataclasses import dataclass, field
@@ -113,8 +115,11 @@ class BitmapFont:
 
         for sheet in spec.get("sheets") or ():
             try:
-                image = Image.open(os.path.join(path, sheet["file"])).convert("RGBA")
-            except (OSError, KeyError) as exc:
+                sheet_path = os.path.realpath(os.path.join(path, sheet["file"]))
+                if not is_within(sheet_path, [os.path.realpath(path)]):
+                    raise FontError(f"Bad sheet in {descriptor}: {sheet['file']!r} is outside the font directory")
+                image = Image.open(sheet_path).convert("RGBA")
+            except (OSError, KeyError, TypeError) as exc:
                 raise FontError(f"Bad sheet in {descriptor}: {exc}") from exc
             self._sheets.append({
                 "px": image.load(),
@@ -358,7 +363,10 @@ def load_font(spec: str) -> BitmapFont | TrueTypeFont:
     kind: str | None = None
 
     if os.path.sep in spec or spec.lower().endswith(_TTF_EXT):
-        expanded = os.path.expanduser(spec)
+        try:
+            expanded = confine(spec, extra_roots=(FONT_DIR, *_SYSTEM_FONT_DIRS))
+        except PathError as exc:
+            raise FontError(str(exc)) from exc
         if os.path.isdir(expanded) and os.path.exists(os.path.join(expanded, "font.json")):
             path, kind = expanded, "bitmap"
         elif os.path.isfile(expanded):

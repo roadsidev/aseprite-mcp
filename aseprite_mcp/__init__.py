@@ -2,6 +2,8 @@
 
 from mcp.server.fastmcp import FastMCP
 
+from .core.guards import guard_tool
+
 
 INSTRUCTIONS = """\
 Tools for drawing and animating pixel art in Aseprite. Sprites are small (16-64 px; a scene with a \
@@ -26,10 +28,9 @@ If it does not read, change the shape, not the details.
 7. Objects sit fully on their surfaces, away from edges, and parts stay attached: a handle touches its \
 mug, leaves grow from their pot.
 
-Reach for these before writing Lua: draw_rows / read_rows (pixels as text), draw_text (numbers, labels), \
+Reach for these first: draw_rows / read_rows (pixels as text), draw_text (numbers, labels), \
 replace_color / remap_colors_in_cel_range (hit flashes, recolours), export_animation / export_tag (GIF \
-previews, scaled, on a background), compare_frames and get_bounds (did a part move? where is it?). \
-run_lua_script is the last resort.
+previews, scaled, on a background), compare_frames and get_bounds (did a part move? where is it?).
 
 Animate pose to pose: redraw each key pose (anticipation, action, follow-through) on its own frame, \
 with the whole body involved and the feet on one ground line unless airborne. copy_frame, \
@@ -40,6 +41,22 @@ and change shape on every frame in the air. Call animation_workflow_guide before
 """
 
 mcp = FastMCP("aseprite", instructions=INSTRUCTIONS)
+
+# Every tool registered through mcp.tool() has its path parameters confined
+# to ASEPRITE_MCP_ROOTS and its size parameters bounded (core/guards.py).
+_register_tool = mcp.tool
+
+
+def _confined_tool(*args, **kwargs):
+    register = _register_tool(*args, **kwargs)
+
+    def decorator(fn):
+        return register(guard_tool(fn))
+
+    return decorator
+
+
+mcp.tool = _confined_tool
 
 __version__ = "0.1.0"
 __author__ = "Divyansh Singh"

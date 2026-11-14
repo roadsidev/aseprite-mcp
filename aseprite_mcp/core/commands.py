@@ -2,10 +2,6 @@ import math
 import subprocess
 import tempfile
 import os
-import dotenv
-
-_ENV_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
-dotenv.load_dotenv(dotenv_path=_ENV_PATH)
 
 
 def lua_escape(s: str) -> str:
@@ -39,6 +35,27 @@ def reject_traversal(path: str) -> str | None:
 
 DEFAULT_TIMEOUT_SECONDS = 60.0
 
+# Every Aseprite CLI option the tools pass. Anything else starting with "-"
+# (for instance a file literally named "--script=x.lua") is refused.
+_ALLOWED_OPTIONS = frozenset({
+    "--all-layers",
+    "--batch",
+    "--data",
+    "--format",
+    "--frame-range",
+    "--layer",
+    "--list-layers",
+    "--list-tags",
+    "--save-as",
+    "--scale",
+    "--script",
+    "--shape-padding",
+    "--sheet",
+    "--sheet-type",
+    "--split-layers",
+    "--tag",
+})
+
 
 def command_timeout() -> float:
     """Seconds an Aseprite run may take, from ASEPRITE_TIMEOUT_SECONDS.
@@ -71,8 +88,14 @@ class AsepriteCommand:
             tuple: (success, output) where success is a boolean and output is the command output
         """
         timeout = command_timeout()
+        exe = os.getenv("ASEPRITE_PATH", "")
+        if not os.path.isabs(exe) or not os.access(exe, os.X_OK):
+            return False, "ASEPRITE_PATH must be the absolute path of the Aseprite executable"
+        for arg in args:
+            if arg.startswith("-") and arg not in _ALLOWED_OPTIONS:
+                return False, f"Refusing unexpected Aseprite option {arg!r}"
         try:
-            cmd = [os.getenv('ASEPRITE_PATH', 'aseprite')] + args
+            cmd = [exe] + args
             result = subprocess.run(
                 cmd,
                 check=True,
@@ -110,7 +133,7 @@ class AsepriteCommand:
         try:
             args = ["--batch"]
             if filename and os.path.exists(filename):
-                args.append(filename)
+                args.append(os.path.abspath(filename))
             args.extend(["--script", script_path])
             
             success, output = AsepriteCommand.run_command(args)

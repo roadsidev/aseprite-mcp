@@ -3,12 +3,11 @@
     "aseprite": {
       "type": "stdio",
       "command": "uv",
-      "args": [
-        "run",
-        "-m",
-        "aseprite_mcp"
-      ],
-      "env": {}
+      "args": ["run", "--locked", "-m", "aseprite_mcp"],
+      "env": {
+        "ASEPRITE_PATH": "/Applications/Aseprite.app/Contents/MacOS/aseprite",
+        "ASEPRITE_MCP_ROOTS": "/tmp/ase-pytest"
+      }
     }
   }
 }

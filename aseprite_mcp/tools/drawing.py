@@ -6,6 +6,24 @@ from ..core.colors import parse_hex_color
 from .. import mcp
 
 
+MAX_PIXELS_PER_CALL = 65536
+
+
+def _int_coord(value) -> int | None:
+    """Coerce a pixel coordinate to int; reject anything that is not integral.
+
+    Coordinates are interpolated into generated Lua, so a string here would
+    be executed as code. Only real ints (not bools) and integral floats pass.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
+
+
 def _parse_hex_color(value: str) -> tuple[int, int, int, int] | None:
     """Parse a hex colour to (r, g, b, a); accepts #RRGGBB and #RRGGBBAA."""
     return parse_hex_color(value)
@@ -48,9 +66,13 @@ async def draw_pixels(filename: str, pixels: List[Dict[str, Any]]) -> str:
     # Add pixel drawing commands. Coordinates are sprite-global; we
     # offset into cel-local space because cel.image:putPixel uses
     # cel-local coordinates.
+    if len(pixels) > MAX_PIXELS_PER_CALL:
+        return f"Too many pixels ({len(pixels)}); the limit is {MAX_PIXELS_PER_CALL} per call"
     for pixel in pixels:
-        x = pixel.get("x", 0)
-        y = pixel.get("y", 0)
+        x = _int_coord(pixel.get("x", 0))
+        y = _int_coord(pixel.get("y", 0))
+        if x is None or y is None:
+            return f"Invalid pixel coordinates: {pixel.get('x')!r}, {pixel.get('y')!r} (integers required)"
         rgb = _parse_hex_color(pixel.get("color", "#000000"))
         if rgb is None:
             return f"Invalid color value: {pixel.get('color')}"
@@ -377,9 +399,13 @@ async def draw_pixels_at(
         local cox = cel.position.x
         local coy = cel.position.y
     """
+    if len(pixels) > MAX_PIXELS_PER_CALL:
+        return f"Too many pixels ({len(pixels)}); the limit is {MAX_PIXELS_PER_CALL} per call"
     for pixel in pixels:
-        x = pixel.get("x", 0)
-        y = pixel.get("y", 0)
+        x = _int_coord(pixel.get("x", 0))
+        y = _int_coord(pixel.get("y", 0))
+        if x is None or y is None:
+            return f"Invalid pixel coordinates: {pixel.get('x')!r}, {pixel.get('y')!r} (integers required)"
         rgb = _parse_hex_color(pixel.get("color", "#000000"))
         if rgb is None:
             return f"Invalid color value: {pixel.get('color')}"
