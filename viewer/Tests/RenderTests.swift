@@ -14,7 +14,8 @@ struct RenderTests {
         testTransparentPixels()
         benchmarkFrontier()
         try await testPlayback()
-        print("PASS: reveal timing, sparse clipping, transparency, image reuse, playback cadence and live queue")
+        testActivityStream()
+        print("PASS: reveal timing, sparse clipping, transparency, image reuse, playback cadence, live queue and activity stream")
     }
 
     static func frame(_ width: Int, _ height: Int, _ pixels: [UInt32], duration: Int = 100) -> PixelFrame {
@@ -128,6 +129,49 @@ struct RenderTests {
             print(String(format: "Headless 256×256 frontier at 2× (%@): setup=%.2fms p50=%.2fms p99=%.2fms peak=%d active pixels (not window frametime)",
                          label, setup, times[times.count / 2], times[Int(Double(times.count) * 0.99)], peak))
         }
+    }
+
+    /// Replays a multi-message turn. Summing tokens at message_stop once
+    /// aborted the app with an exclusivity violation on the observed dictionary.
+    @MainActor
+    static func testActivityStream() {
+        let support = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".tmp/test-support-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: support) }
+        let store = SessionStore(workspace: support, support: support)
+        let id = UUID()
+        store.beginActivity(id)
+        func e(_ event: [String: Any]) -> [String: Any] { ["type": "stream_event", "event": event] }
+        let turn: [[String: Any]] = [
+            e(["type": "message_start"]),
+            e(["type": "content_block_start", "content_block": ["type": "thinking"]]),
+            e(["type": "content_block_delta", "delta": ["type": "thinking_delta", "thinking": "plan"]]),
+            e(["type": "content_block_stop"]),
+            e(["type": "content_block_start", "content_block": ["type": "tool_use", "name": "mcp__aseprite__draw_rows"]]),
+            e(["type": "content_block_delta", "delta": ["type": "input_json_delta", "partial_json": "{\"rows\":"]]),
+            e(["type": "content_block_stop"]),
+            e(["type": "message_delta", "usage": ["output_tokens": 50]]),
+            e(["type": "message_stop"]),
+        ]
+        store.handle(turn, for: id)
+        precondition(store.activity[id]?.phase == "Ejecutando draw_rows en Aseprite…")
+        precondition(store.activity[id]?.inputChars == 8)
+        store.handle([
+            e(["type": "message_start"]),
+            e(["type": "content_block_start", "content_block": ["type": "text"]]),
+            e(["type": "content_block_delta", "delta": ["type": "text_delta", "text": "listo"]]),
+            e(["type": "message_delta", "usage": ["output_tokens": 20]]),
+            e(["type": "message_stop"]),
+        ], for: id)
+        precondition(store.activity[id]?.outputTokens == 70)
+        precondition(store.activity[id]?.phase == "Escribiendo la respuesta…")
+        precondition(store.streaming[id] == "listo")
+
+        // total_cost_usd is cumulative across --resume turns.
+        let record = store.create(kind: .animacion)
+        store.handle([["type": "result", "total_cost_usd": 0.92]], for: record.id)
+        store.handle([["type": "result", "total_cost_usd": 0.96]], for: record.id)
+        let costs = store.session(record.id)!
+        precondition(costs.turns == 2 && abs(costs.totalCostUSD - 0.96) < 1e-9 && abs(costs.lastCostUSD - 0.04) < 1e-9)
     }
 
     @MainActor

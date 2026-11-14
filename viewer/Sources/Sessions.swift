@@ -203,7 +203,7 @@ final class SessionStore {
         try process.run()
         processes[id] = process
         running.insert(id)
-        activity[id] = Activity(phase: "Iniciando Claude y el MCP…")
+        beginActivity(id)
         stdin.fileHandleForWriting.write(Data(prompt.utf8))
         try? stdin.fileHandleForWriting.close()
     }
@@ -224,7 +224,12 @@ final class SessionStore {
         persistTranscript(id)
     }
 
-    private func handle(_ events: [[String: Any]], for id: UUID) {
+    func beginActivity(_ id: UUID) {
+        activity[id] = Activity(phase: "Iniciando Claude y el MCP…")
+    }
+
+    /// Applies stream-json events from `claude -p`. Internal so tests can replay a stream.
+    func handle(_ events: [[String: Any]], for id: UUID) {
         for event in events {
             switch event["type"] as? String {
             case "system":
@@ -269,14 +274,20 @@ final class SessionStore {
                                        resetsAt: (w["resetsAt"] as? Double).map { Date(timeIntervalSince1970: $0) })
                 }.sorted { $0.name < $1.name }
             case "result":
+                // Cumulative for the whole Claude session, across --resume.
                 let cost = event["total_cost_usd"] as? Double ?? 0
                 let window = (event["modelUsage"] as? [String: Any])?.values
                     .compactMap { ($0 as? [String: Any])?["contextWindow"] as? Int }.max()
                 update(id) {
                     $0.turns += 1
                     $0.lastTurnEnd = .now
-                    $0.lastCostUSD = cost
-                    $0.totalCostUSD += cost
+                    if cost >= $0.totalCostUSD {
+                        $0.lastCostUSD = cost - $0.totalCostUSD
+                        $0.totalCostUSD = cost
+                    } else {                // Claude lost its tally: count this run on top
+                        $0.lastCostUSD = cost
+                        $0.totalCostUSD += cost
+                    }
                     if let window, window > 0 { $0.contextWindow = window }
                 }
                 if event["is_error"] as? Bool == true, let text = event["result"] as? String {
@@ -289,28 +300,30 @@ final class SessionStore {
 
     /// Partial-message events: phase, live output tokens, thinking excerpt.
     private func trackActivity(_ e: [String: Any], for id: UUID) {
-        guard activity[id] != nil else { return }
+        // Mutate a copy: reading and writing the observed dictionary in one
+        // expression is an exclusivity violation (abort) at runtime.
+        guard var a = activity[id] else { return }
         switch e["type"] as? String {
         case "message_start":
-            activity[id]?.messageOutput = 0
+            a.messageOutput = 0
         case "message_delta":
-            if let out = (e["usage"] as? [String: Any])?["output_tokens"] as? Int { activity[id]?.messageOutput = out }
+            if let out = (e["usage"] as? [String: Any])?["output_tokens"] as? Int { a.messageOutput = out }
         case "message_stop":
-            activity[id]?.finishedOutput += activity[id]?.messageOutput ?? 0
-            activity[id]?.messageOutput = 0
+            a.finishedOutput += a.messageOutput
+            a.messageOutput = 0
         case "content_block_start":
             let block = e["content_block"] as? [String: Any] ?? [:]
             switch block["type"] as? String {
             case "thinking", "redacted_thinking":
-                activity[id]?.set("Pensando…")
-                activity[id]?.thinking = ""
+                a.set("Pensando…")
+                a.thinking = ""
             case "text":
-                activity[id]?.set("Escribiendo la respuesta…")
+                a.set("Escribiendo la respuesta…")
             case "tool_use":
                 let name = (block["name"] as? String ?? "").replacingOccurrences(of: "mcp__aseprite__", with: "")
-                activity[id]?.tool = name
-                activity[id]?.inputChars = 0
-                activity[id]?.set("Preparando \(name)…")
+                a.tool = name
+                a.inputChars = 0
+                a.set("Preparando \(name)…")
             default: break
             }
         case "content_block_delta":
@@ -319,19 +332,19 @@ final class SessionStore {
             case "text_delta":
                 streaming[id, default: ""] += delta["text"] as? String ?? ""
             case "thinking_delta":
-                var text = (activity[id]?.thinking ?? "") + (delta["thinking"] as? String ?? "")
-                if text.count > 600 { text = String(text.suffix(400)) }
-                activity[id]?.thinking = text
+                a.thinking += delta["thinking"] as? String ?? ""
+                if a.thinking.count > 600 { a.thinking = String(a.thinking.suffix(400)) }
             case "input_json_delta":
-                activity[id]?.inputChars += (delta["partial_json"] as? String ?? "").count
+                a.inputChars += (delta["partial_json"] as? String ?? "").count
             default: break
             }
         case "content_block_stop":
-            if let tool = activity[id]?.tool, activity[id]?.phase.hasPrefix("Preparando") == true {
-                activity[id]?.set("Ejecutando \(tool) en Aseprite…")
+            if let tool = a.tool, a.phase.hasPrefix("Preparando") {
+                a.set("Ejecutando \(tool) en Aseprite…")
             }
         default: break
         }
+        if a != activity[id] { activity[id] = a }
     }
 
     /// The last request's prompt size is the size of the conversation Claude carries.
