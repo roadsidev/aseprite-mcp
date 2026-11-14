@@ -139,7 +139,7 @@ struct SessionDetail: View {
                         ChatBubble(line: ChatLine(role: .assistant, text: partial), accent: accent)
                     }
                     if running {
-                        ProgressView().controlSize(.small).padding(.leading, 4)
+                        ActivityRow(activity: store.activity[record.id], now: now, accent: accent)
                     }
                     Color.clear.frame(height: 1).id("end")
                 }
@@ -147,6 +147,7 @@ struct SessionDetail: View {
             }
             .onChange(of: store.lines(record.id).count) { _, _ in proxy.scrollTo("end", anchor: .bottom) }
             .onChange(of: store.streaming[record.id]?.count ?? 0) { _, _ in proxy.scrollTo("end", anchor: .bottom) }
+            .onChange(of: store.activity[record.id]?.phase) { _, _ in proxy.scrollTo("end", anchor: .bottom) }
             .onAppear { proxy.scrollTo("end", anchor: .bottom) }
         }
     }
@@ -213,6 +214,55 @@ struct SessionDetail: View {
         if coldRewrite && !force { confirmCold = true; return }
         store.send(draft, to: record.id)
         draft = ""
+    }
+}
+
+/// What the running turn is doing: phase, time, tokens, thinking excerpt.
+struct ActivityRow: View {
+    let activity: Activity?
+    let now: Date
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 7) {
+                ProgressView().controlSize(.mini)
+                Text(activity?.phase ?? "Trabajando…")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(accent)
+                    .contentTransition(.opacity)
+                Spacer(minLength: 0)
+            }
+            if let a = activity {
+                Text(details(a))
+                    .font(.system(size: 9).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                if !a.thinking.isEmpty {
+                    Text(a.thinking.suffix(220).trimmingCharacters(in: .whitespacesAndNewlines))
+                        .font(.system(size: 10).italic())
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(3)
+                        .truncationMode(.head)
+                }
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(accent.opacity(0.06), in: .rect(cornerRadius: 8))
+        .animation(.easeOut(duration: 0.2), value: activity?.phase)
+    }
+
+    private func details(_ a: Activity) -> String {
+        var parts = ["\(Self.clock(now.timeIntervalSince(a.started))) en total"]
+        if now.timeIntervalSince(a.since) >= 3 { parts.append("\(Self.clock(now.timeIntervalSince(a.since))) en esta fase") }
+        if a.outputTokens > 0 { parts.append("\(a.outputTokens.tokens) tokens generados") }
+        if a.phase.hasPrefix("Preparando"), a.inputChars > 0 { parts.append("\(a.inputChars.tokens) caracteres de argumentos") }
+        return parts.joined(separator: " · ")
+    }
+
+    static func clock(_ t: TimeInterval) -> String {
+        let s = max(0, Int(t))
+        return s < 60 ? "\(s) s" : "\(s / 60):\(String(format: "%02d", s % 60))"
     }
 }
 

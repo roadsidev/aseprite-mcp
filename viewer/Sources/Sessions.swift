@@ -66,6 +66,7 @@ final class SessionStore {
     private(set) var streaming: [UUID: String] = [:]   // partial assistant text
     private(set) var running: Set<UUID> = []
     private(set) var usage: [UsageWindow] = []
+    private(set) var activity: [UUID: Activity] = [:]   // what a running turn is doing now
     var selected: [SessionKind: UUID] = [:]
 
     let workspace: URL
@@ -202,6 +203,7 @@ final class SessionStore {
         try process.run()
         processes[id] = process
         running.insert(id)
+        activity[id] = Activity(phase: "Iniciando Claude y el MCP…")
         stdin.fileHandleForWriting.write(Data(prompt.utf8))
         try? stdin.fileHandleForWriting.close()
     }
@@ -209,6 +211,7 @@ final class SessionStore {
     private func finished(_ id: UUID, status: Int32, interrupted: Bool, stderr: String) {
         processes[id] = nil
         running.remove(id)
+        activity[id] = nil
         if let partial = streaming.removeValue(forKey: id), !partial.isEmpty {
             append(ChatLine(role: .assistant, text: partial), to: id)
         }
@@ -225,12 +228,13 @@ final class SessionStore {
         for event in events {
             switch event["type"] as? String {
             case "system":
-                if event["subtype"] as? String == "init" { update(id) { $0.started = true } }
+                if event["subtype"] as? String == "init" {
+                    update(id) { $0.started = true }
+                    activity[id]?.set("Pensando…")
+                }
             case "stream_event":
-                guard let e = event["event"] as? [String: Any], e["type"] as? String == "content_block_delta",
-                      let delta = e["delta"] as? [String: Any], delta["type"] as? String == "text_delta",
-                      let text = delta["text"] as? String else { continue }
-                streaming[id, default: ""] += text
+                guard let e = event["event"] as? [String: Any] else { continue }
+                trackActivity(e, for: id)
             case "assistant":
                 guard let message = event["message"] as? [String: Any] else { continue }
                 if let usage = message["usage"] as? [String: Any] { recordRequest(usage, for: id) }
@@ -249,6 +253,7 @@ final class SessionStore {
                 }
             case "user":
                 guard let message = event["message"] as? [String: Any] else { continue }
+                if activity[id] != nil { activity[id]?.set("Pensando…") }
                 for block in message["content"] as? [[String: Any]] ?? [] where block["is_error"] as? Bool == true {
                     let text: String
                     if let s = block["content"] as? String { text = s }
@@ -279,6 +284,53 @@ final class SessionStore {
                 }
             default: break
             }
+        }
+    }
+
+    /// Partial-message events: phase, live output tokens, thinking excerpt.
+    private func trackActivity(_ e: [String: Any], for id: UUID) {
+        guard activity[id] != nil else { return }
+        switch e["type"] as? String {
+        case "message_start":
+            activity[id]?.messageOutput = 0
+        case "message_delta":
+            if let out = (e["usage"] as? [String: Any])?["output_tokens"] as? Int { activity[id]?.messageOutput = out }
+        case "message_stop":
+            activity[id]?.finishedOutput += activity[id]?.messageOutput ?? 0
+            activity[id]?.messageOutput = 0
+        case "content_block_start":
+            let block = e["content_block"] as? [String: Any] ?? [:]
+            switch block["type"] as? String {
+            case "thinking", "redacted_thinking":
+                activity[id]?.set("Pensando…")
+                activity[id]?.thinking = ""
+            case "text":
+                activity[id]?.set("Escribiendo la respuesta…")
+            case "tool_use":
+                let name = (block["name"] as? String ?? "").replacingOccurrences(of: "mcp__aseprite__", with: "")
+                activity[id]?.tool = name
+                activity[id]?.inputChars = 0
+                activity[id]?.set("Preparando \(name)…")
+            default: break
+            }
+        case "content_block_delta":
+            let delta = e["delta"] as? [String: Any] ?? [:]
+            switch delta["type"] as? String {
+            case "text_delta":
+                streaming[id, default: ""] += delta["text"] as? String ?? ""
+            case "thinking_delta":
+                var text = (activity[id]?.thinking ?? "") + (delta["thinking"] as? String ?? "")
+                if text.count > 600 { text = String(text.suffix(400)) }
+                activity[id]?.thinking = text
+            case "input_json_delta":
+                activity[id]?.inputChars += (delta["partial_json"] as? String ?? "").count
+            default: break
+            }
+        case "content_block_stop":
+            if let tool = activity[id]?.tool, activity[id]?.phase.hasPrefix("Preparando") == true {
+                activity[id]?.set("Ejecutando \(tool) en Aseprite…")
+            }
+        default: break
         }
     }
 
@@ -378,6 +430,28 @@ final class SessionStore {
             return URL(fileURLWithPath: path)
         }
         return nil
+    }
+}
+
+/// Live status of a running turn, shown under the transcript.
+struct Activity: Hashable {
+    var phase: String
+    var since = Date()            // when this phase began
+    let started = Date()          // when the turn began
+    var tool: String?
+    var inputChars = 0            // tool arguments streamed so far
+    var thinking = ""             // tail of the visible thinking, if the model streams it
+    var finishedOutput = 0
+    var messageOutput = 0
+    var outputTokens: Int { finishedOutput + messageOutput }
+
+    init(phase: String) { self.phase = phase }
+
+    mutating func set(_ phase: String) {
+        guard phase != self.phase else { return }
+        self.phase = phase
+        since = Date()
+        if !phase.hasPrefix("Pensando") { thinking = "" }
     }
 }
 

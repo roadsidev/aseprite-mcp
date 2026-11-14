@@ -293,8 +293,11 @@ struct ContentView: View {
 
     private var emptyState: some View {
         VStack(spacing: 12) {
-            StageEmpty(symbol: "square.stack.3d.up", accent: .mint, title: "Esperando al MCP…",
-                       detail: "Cada cambio de sprite, píxel a píxel. Las animaciones van aparte (2).")
+            StageEmpty(symbol: "square.stack.3d.up", accent: .mint,
+                       title: model.sessionFilter == nil ? "Esperando al MCP…" : "Esta sesión todavía no dibuja",
+                       detail: model.sessionFilter == nil
+                           ? "Cada cambio de sprite, píxel a píxel. Las animaciones van aparte (2)."
+                           : "Aparecerá aquí con su primer cambio. «Todas las sesiones» muestra el resto.")
                 .frame(maxHeight: 200)
             Label(model.connected ? "Conectado · esperando un sprite" : "Escuchando cambios locales", systemImage: "antenna.radiowaves.left.and.right")
                 .font(.system(size: 10)).foregroundStyle(.tertiary)
